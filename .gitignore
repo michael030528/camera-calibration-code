@@ -11,7 +11,18 @@ pairs/
 
 # LiDAR / ROS / reference data
 reference_LVX2toPCD/
-ros2_ws/
+# Keep ROS build/runtime output and calibration samples out of Git, while
+# allowing this workspace's reusable source package and launcher scripts.
+ros2_ws/*
+!ros2_ws/src/
+ros2_ws/src/*
+!ros2_ws/src/camera_lidar_chessboard_calibration/
+!ros2_ws/src/camera_lidar_chessboard_calibration/**
+!ros2_ws/setup_calibration.bash
+!ros2_ws/start_calibration.bash
+!ros2_ws/src/camera_lidar_chessboard_calibration/config/calibration.yaml
+**/__pycache__/
+*.py[cod]
 *.pcd
 *.bag
 *.db3

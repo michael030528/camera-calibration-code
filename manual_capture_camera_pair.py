@@ -19,8 +19,8 @@ Example:
 
 If the default RTSP path does not work for your camera, pass full URLs:
     python manual_capture_camera_pair.py ^
-        --url1 "rtsp://admin:111qqq%21%21%21@192.168.1.102:554/Streaming/Channels/101" ^
-        --url2 "rtsp://admin:111qqq%21%21%21@192.168.1.105:554/Streaming/Channels/101"
+        --url1 "rtsp://admin:URL_ENCODED_PASSWORD@192.168.1.102:554/Streaming/Channels/101" ^
+        --url2 "rtsp://admin:URL_ENCODED_PASSWORD@192.168.1.105:554/Streaming/Channels/101"
 """
 
 from __future__ import annotations
@@ -177,7 +177,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ip1", default="192.168.1.102", help="First camera IP address.")
     parser.add_argument("--ip2", default="192.168.1.105", help="Second camera IP address.")
     parser.add_argument("--username", default="admin", help="Camera username.")
-    parser.add_argument("--password", default="111qqq!!!", help="Camera password.")
+    parser.add_argument(
+        "--password",
+        default=os.environ.get("HIKVISION_PASSWORD", ""),
+        help="Camera password (defaults to HIKVISION_PASSWORD).",
+    )
     parser.add_argument("--port", type=int, default=554, help="RTSP port.")
     parser.add_argument(
         "--rtsp-path",

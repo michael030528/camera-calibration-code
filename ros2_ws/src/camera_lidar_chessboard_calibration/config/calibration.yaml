@@ -1,0 +1,45 @@
+camera_rtsp:
+  ros__parameters:
+    ip: "192.168.1.102"
+    port: 554
+    username: "admin"
+    password: ""
+    path: "/Streaming/Channels/101"
+    frame_id: "camera_optical_frame"
+    # Hikvision stream on this device blocks in OpenCV/GStreamer negotiation;
+    # FFmpeg is verified and still uses no-buffer/latest-frame processing.
+    backend: "ffmpeg"
+    rtsp_transport: "tcp"
+    # Positive value moves the image timestamp earlier to compensate RTSP delay.
+    camera_time_offset_ms: 0.0
+capture_gui:
+  ros__parameters:
+    image_topic: "/camera/image_raw"
+    cloud_topic: "/livox/lidar"
+    board_cols: 11
+    board_rows: 8
+    square_size: 0.060
+    board_outer_width: 0.80
+    board_outer_height: 0.60
+    # Nearest buffered image/cloud pair must be within 50 ms.
+    sync_slop: 0.05
+    selection_cloud_topic: "/calibration/selection_cloud"
+    output_dir: "calibration_samples"
+    # Only these LiDAR points are shown/fitted. Tune from the GUI status/readme.
+    roi_x: [0.5, 8.0]
+    roi_y: [-4.0, 4.0]
+    roi_z: [-3.0, 3.0]
+    reflectivity_min: 0.0
+    plane_threshold: 0.025
+    detection_scale: 0.65
+    detection_hz: 12.0
+    auto_save: false
+    auto_save_stable_frames: 3
+    auto_save_min_interval: 1.5
+    auto_save_max_samples: 30
+    min_lidar_inliers: 80
+    manual_selection_enabled: true
+    selection_margin: 0.02
+    selection_thickness: 0.08
+    selection_size_tolerance: 0.25
+    manual_min_points: 30

@@ -251,7 +251,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--ip", default="192.168.1.105", help="Camera IP address.")
     parser.add_argument("--username", default="admin", help="Camera username.")
-    parser.add_argument("--password", default="111qqq!!!", help="Camera password.")
+    parser.add_argument(
+        "--password",
+        default=os.environ.get("HIKVISION_PASSWORD", ""),
+        help="Camera password (defaults to HIKVISION_PASSWORD).",
+    )
     parser.add_argument("--port", type=int, default=554, help="RTSP port.")
     parser.add_argument("--rtsp-path", default="/Streaming/Channels/101", help="RTSP path used when --url is not provided.")
     parser.add_argument("--url", help="Full RTSP URL. Overrides --ip/username/password/path.")

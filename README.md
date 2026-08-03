@@ -60,7 +60,7 @@ Default login parameters:
 
 ```text
 username: admin
-password: 111qqq!!!
+password: pass with --password or HIKVISION_PASSWORD; never commit it
 resolution: 1920 x 1080
 ```
 
