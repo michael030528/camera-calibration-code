@@ -1,0 +1,21 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Captured images and generated calibration data
+auto_capture_intrinsics/
+debug*/
+pairs/
+*.yml
+*.yaml
+
+# LiDAR / ROS / reference data
+reference_LVX2toPCD/
+ros2_ws/
+*.pcd
+*.bag
+*.db3
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
