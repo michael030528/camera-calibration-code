@@ -10,7 +10,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('password', default_value=''),
         DeclareLaunchArgument('cloud_topic', default_value='/livox/lidar'),
-        DeclareLaunchArgument('lidar_ip', default_value='192.168.1.53'),
+        DeclareLaunchArgument('lidar_ip', default_value='192.168.1.152'),
         DeclareLaunchArgument('host_ip', default_value='192.168.1.41'),
         DeclareLaunchArgument('output_dir', default_value='calibration_samples'),
         DeclareLaunchArgument('auto_save_max_samples', default_value='30'),

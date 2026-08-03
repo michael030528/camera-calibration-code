@@ -1,14 +1,21 @@
-import json, os, time, threading
+import copy, json, os, time, threading
 from collections import deque
 from pathlib import Path
 import cv2, numpy as np, rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Image, PointCloud2
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+from sensor_msgs.msg import Image, PointCloud2, PointField
 from sensor_msgs_py import point_cloud2
 from geometry_msgs.msg import Point, PointStamped
+from std_msgs.msg import Empty
 from visualization_msgs.msg import Marker
+
+LATEST_SENSOR_QOS=QoSProfile(
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE)
 
 def cloud_array(msg):
     names = [f.name for f in msg.fields]
@@ -26,6 +33,44 @@ def cloud_array(msg):
     a=np.asarray(list(rows),dtype=np.float32)
     base=np.column_stack((a[:,:3],a[:,3] if a.shape[1]>3 else np.zeros(len(a),np.float32)))
     return np.column_stack((base,a[:,4])) if has_time else base
+
+def cloud_source_ids(msg):
+    if not any(f.name == 'accumulation_frame' for f in msg.fields):
+        return np.zeros(msg.width * msg.height, np.uint32)
+    rows = point_cloud2.read_points(
+        msg, field_names=['accumulation_frame'], skip_nans=True)
+    if getattr(rows.dtype, 'names', None):
+        return np.asarray(rows['accumulation_frame'], np.uint32)
+    return np.asarray(list(rows), np.uint32).reshape(-1)
+
+def accumulated_cloud(reference, frames):
+    """Combine fixed-frame clouds and retain each point's source-frame id."""
+    arrays=[]
+    for frame_index,msg in enumerate(frames):
+        points=cloud_array(msg)
+        if len(points): arrays.append((points,frame_index))
+    if not arrays: return None
+    total=sum(len(points) for points,_ in arrays)
+    dtype=np.dtype([('x','<f4'),('y','<f4'),('z','<f4'),
+                    ('intensity','<f4'),('accumulation_frame','<u4')])
+    packed=np.empty(total,dtype=dtype); offset=0
+    for points,frame_index in arrays:
+        count=len(points); block=packed[offset:offset+count]
+        block['x']=points[:,0]; block['y']=points[:,1]; block['z']=points[:,2]
+        block['intensity']=points[:,3] if points.shape[1]>3 else 0.0
+        block['accumulation_frame']=frame_index; offset+=count
+    fields=[
+        PointField(name='x',offset=0,datatype=PointField.FLOAT32,count=1),
+        PointField(name='y',offset=4,datatype=PointField.FLOAT32,count=1),
+        PointField(name='z',offset=8,datatype=PointField.FLOAT32,count=1),
+        PointField(name='intensity',offset=12,datatype=PointField.FLOAT32,count=1),
+        PointField(name='accumulation_frame',offset=16,datatype=PointField.UINT32,count=1)]
+    # create_cloud converts the NumPy buffer to the array.array representation
+    # expected by ROS 2 Jazzy. A raw bytes assignment can be silently ignored
+    # by some PointCloud2 consumers, notably RViz.
+    out=point_cloud2.create_cloud(copy.deepcopy(reference.header),fields,packed)
+    out.is_dense=True
+    return out
 
 def fit_plane(points, threshold, rounds=80, min_inliers=50):
     if len(points) < min_inliers: return None
@@ -50,12 +95,18 @@ class CaptureGui(Node):
         defaults={'image_topic':'/camera/image_raw','cloud_topic':'/livox/lidar','board_cols':11,'board_rows':8,
                   'square_size':0.06,'board_outer_width':0.80,'board_outer_height':0.60,
                   'sync_slop':0.05,'selection_cloud_topic':'/calibration/selection_cloud',
+                  'selection_freeze_topic':'/calibration/freeze_selection',
+                  'selected_points_topic':'/calibration/selected_points',
                   'output_dir':'calibration_samples',
                   'roi_x':[0.5,8.0],'roi_y':[-4.0,4.0],'roi_z':[-3.0,3.0],
                   'reflectivity_min':0.0,'plane_threshold':0.025,
                   'detection_scale':0.65,'detection_hz':12.0,
                   'auto_save':True,'auto_save_stable_frames':3,'auto_save_min_interval':1.5,
-                  'auto_save_max_samples':30,'min_lidar_inliers':80}
+                  'auto_save_max_samples':30,'min_lidar_inliers':80,
+                  'accumulation_frames':5,'accumulation_min_frames':3,
+                  'accumulation_max_span':0.55,'motion_min_points_per_frame':8,
+                  'motion_max_normal_deg':4.0,'motion_max_plane_offset':0.04,
+                  'motion_max_centroid_shift':0.15}
         defaults.update({'manual_selection_enabled':True,'selection_margin':0.02,
                          'selection_thickness':0.08,'selection_size_tolerance':0.25,
                          'manual_min_points':30})
@@ -70,13 +121,21 @@ class CaptureGui(Node):
         self.auto_save=bool(p('auto_save')); self.auto_stable_required=int(p('auto_save_stable_frames'))
         self.auto_min_interval=float(p('auto_save_min_interval')); self.auto_max=int(p('auto_save_max_samples'))
         self.min_lidar_inliers=int(p('min_lidar_inliers')); self.auto_good=0; self.auto_saved=0
+        self.accumulation_frames=max(1,int(p('accumulation_frames')))
+        self.accumulation_min_frames=max(1,min(self.accumulation_frames,int(p('accumulation_min_frames'))))
+        self.accumulation_max_span=float(p('accumulation_max_span'))
+        self.motion_min_points=max(3,int(p('motion_min_points_per_frame')))
+        self.motion_max_normal=float(p('motion_max_normal_deg'))
+        self.motion_max_offset=float(p('motion_max_plane_offset'))
+        self.motion_max_centroid=float(p('motion_max_centroid_shift'))
         self.manual_selection=bool(p('manual_selection_enabled')); self.selection_margin=float(p('selection_margin'))
         self.selection_thickness=float(p('selection_thickness')); self.manual_min_points=int(p('manual_min_points'))
         self.selection_size_tolerance=float(p('selection_size_tolerance'))
         self.clicked_corners=[]
-        self.image_buffer=deque(maxlen=8); self.cloud_buffer=deque(maxlen=6)
+        self.image_buffer=deque(maxlen=8); self.cloud_buffer=deque(maxlen=max(8,self.accumulation_frames+2))
         self.display_pair=None; self.frozen_pair=None; self.last_preview_pair_key=None
-        self.frozen_camera_view=None
+        self.display_accumulation_meta=None; self.frozen_accumulation_meta=None
+        self.frozen_camera_view=None; self.frozen_mode=None
         self.last_auto_time=0.0; self.last_signature=None
         self.out.mkdir(parents=True,exist_ok=True); self.bridge=CvBridge(); self.latest=None; self.seq=0
         self.last_sync_time = 0.0
@@ -89,9 +148,14 @@ class CaptureGui(Node):
         self.detect_count=0; self.detect_hits=0; self.detect_report_at=time.monotonic()+5
         self.latest_image_msg=None
         self.latest_cloud_msg=None; self.selection_meta=None
-        self.preview_sub=self.create_subscription(Image,p('image_topic'),self.preview_cb,qos_profile_sensor_data)
-        self.cloud_preview_sub=self.create_subscription(PointCloud2,p('cloud_topic'),self.cloud_preview_cb,qos_profile_sensor_data)
+        self.accumulation_publish_count=0
+        self.preview_sub=self.create_subscription(Image,p('image_topic'),self.preview_cb,LATEST_SENSOR_QOS)
+        self.cloud_preview_sub=self.create_subscription(PointCloud2,p('cloud_topic'),self.cloud_preview_cb,LATEST_SENSOR_QOS)
         self.clicked_sub=self.create_subscription(PointStamped,'/clicked_point',self.clicked_cb,10)
+        self.freeze_sub=self.create_subscription(
+            Empty,p('selection_freeze_topic'),self.freeze_request_cb,10)
+        self.selected_points_sub=self.create_subscription(
+            PointCloud2,p('selected_points_topic'),self.selected_points_cb,qos_profile_sensor_data)
         self.marker_pub=self.create_publisher(Marker,'/calibration/selection_box',10)
         self.selection_cloud_pub=self.create_publisher(
             PointCloud2,p('selection_cloud_topic'),qos_profile_sensor_data)
@@ -99,8 +163,8 @@ class CaptureGui(Node):
         threading.Thread(target=self.camera_detector,daemon=True,name='camera-chessboard-tracker').start()
         self.create_timer(1.0/30.0,self.display_tick)
         self.get_logger().info(
-            'GUI: first RViz click freezes one synchronized image/cloud pair; '
-            'select 4 corners on that frame. C cancels, Q quits.')
+            f'GUI: RViz shows a {self.accumulation_frames}-frame motion-checked cloud; '
+            'drag around board points. C cancels, Q quits.')
 
     def preview_cb(self, msg):
         # Never run detection here: display the newest frame immediately.
@@ -141,10 +205,8 @@ class CaptureGui(Node):
             msg,image=item
             deep_search=self.detect_failures>0 and self.detect_failures%8==0
             found,corners=self.detect_board(image,deep_search)
-            view=image.copy()
             if found:
                 self.tracked_corners=corners.copy(); self.detect_failures=0
-                cv2.drawChessboardCorners(view,(self.cols,self.rows),corners,True)
                 self.latest_camera_detection=(msg.header.stamp,corners.copy())
             else:
                 self.detect_failures+=1
@@ -153,16 +215,13 @@ class CaptureGui(Node):
             if time.monotonic()>=self.detect_report_at:
                 self.get_logger().info(f'Chessboard detector: {self.detect_count/5:.1f} Hz, hits={self.detect_hits}/{self.detect_count}')
                 self.detect_count=0; self.detect_hits=0; self.detect_report_at=time.monotonic()+5
-            cv2.putText(view,f'chessboard: {found}  tracker: {"LOCK" if found else "SEARCH"}',
-                        (15,30),0,0.75,(0,255,0) if found else (0,180,255),2)
-            self.detected_camera=view; self.detected_at=time.monotonic()
             time.sleep(max(0.0,self.detection_period-(time.monotonic()-started)))
 
     def cloud_preview_cb(self,msg):
         # Match every cloud to the nearest buffered camera timestamp. RViz
         # displays this matched cloud topic, not the raw live topic. Once the
         # first corner is clicked, publication stops and the exact pair stays
-        # frozen until all four corners have been processed.
+        # frozen until the RViz selection has been processed.
         self.latest_cloud_msg=msg
         self.cloud_buffer.append(msg)
         self.update_synchronized_preview()
@@ -179,15 +238,31 @@ class CaptureGui(Node):
         key=(cmsg.header.stamp.sec,cmsg.header.stamp.nanosec,
              imsg.header.stamp.sec,imsg.header.stamp.nanosec)
         if key==self.last_preview_pair_key: return
+        frames=sorted((item for item in self.cloud_buffer
+                       if 0.0<=cts-self.msg_time(item)<=self.accumulation_max_span),
+                      key=self.msg_time)[-self.accumulation_frames:]
+        combined=accumulated_cloud(cmsg,frames)
+        if combined is None: return
         self.last_preview_pair_key=key
-        self.display_pair=(imsg,cmsg)
-        self.selection_cloud_pub.publish(cmsg)
-        self.cb(imsg,cmsg)
+        span=self.msg_time(frames[-1])-self.msg_time(frames[0]) if len(frames)>1 else 0.0
+        self.display_accumulation_meta={'accumulation_frames':len(frames),
+                                        'accumulation_span_ms':span*1000.0,
+                                        'accumulated_points':int(combined.width)}
+        self.display_pair=(imsg,combined)
+        self.selection_cloud_pub.publish(combined)
+        self.accumulation_publish_count+=1
+        if self.accumulation_publish_count in (1,10):
+            self.get_logger().info(
+                f'Accumulated cloud published: {len(frames)} frames, '
+                f'{combined.width} points, span={span*1000:.1f} ms')
+        # Manual RViz selection performs detection and plane fitting only on
+        # the frozen pair. Avoid duplicate full-frame work during live preview.
+        if self.auto_save: self.cb(imsg,cmsg)
 
     def clicked_cb(self,click):
         self.get_logger().info(f'RViz click received: ({click.point.x:.2f}, {click.point.y:.2f}, {click.point.z:.2f})')
         if not self.manual_selection: return
-        if self.frozen_pair is None and not self.freeze_displayed_pair(): return
+        if self.frozen_pair is None and not self.freeze_displayed_pair('corners'): return
         imsg,cmsg,image,camera_corners,dt_ms=self.frozen_pair
         self.clicked_corners.append(np.array([click.point.x,click.point.y,click.point.z],float))
         self.publish_corner_markers(cmsg.header.frame_id)
@@ -205,11 +280,21 @@ class CaptureGui(Node):
     def msg_time(msg):
         return msg.header.stamp.sec+msg.header.stamp.nanosec*1e-9
 
-    def freeze_displayed_pair(self):
+    def freeze_request_cb(self,_msg):
+        if self.frozen_pair is None:
+            self.freeze_displayed_pair('select')
+
+    def freeze_displayed_pair(self,mode='select'):
         if self.display_pair is None:
             self.get_logger().warning('No synchronized image/cloud pair is ready yet')
             return False
         imsg,cmsg=self.display_pair
+        meta=self.display_accumulation_meta or {}
+        if int(meta.get('accumulation_frames',1))<self.accumulation_min_frames:
+            self.get_logger().warning(
+                f'Cannot freeze: only {meta.get("accumulation_frames",1)} LiDAR frames are buffered; '
+                f'need {self.accumulation_min_frames}')
+            return False
         dt_ms=(self.msg_time(imsg)-self.msg_time(cmsg))*1000
         if abs(dt_ms)>self.sync_slop*1000:
             self.get_logger().warning(f'Cannot freeze: image/cloud delta {dt_ms:.1f} ms exceeds limit')
@@ -219,19 +304,26 @@ class CaptureGui(Node):
         if not found:
             self.get_logger().warning('Cannot freeze: camera chessboard is not detected in the matched frame')
             return False
-        self.frozen_pair=(imsg,cmsg,image,corners,dt_ms)
+        self.frozen_pair=(imsg,cmsg,image,corners,dt_ms); self.frozen_mode=mode
+        self.frozen_accumulation_meta=dict(meta)
         self.selection_cloud_pub.publish(cmsg)
         self.update_frozen_camera_view(image,corners,dt_ms,0)
         self.get_logger().info(
             f'Frozen synchronized frame: image={self.msg_time(imsg):.9f}, '
-            f'cloud={self.msg_time(cmsg):.9f}, dt={dt_ms:+.1f} ms')
+            f'cloud={self.msg_time(cmsg):.9f}, dt={dt_ms:+.1f} ms, '
+            f'accumulated={meta.get("accumulation_frames",1)} frames / '
+            f'{meta.get("accumulated_points",cmsg.width)} points')
         return True
 
     def update_frozen_camera_view(self,image,corners,dt_ms,count):
         view=image.copy(); cv2.drawChessboardCorners(view,(self.cols,self.rows),corners,True)
         cv2.rectangle(view,(0,0),(view.shape[1],82),(20,20,20),-1)
-        cv2.putText(view,f'FROZEN SYNC FRAME  dt={dt_ms:+.1f} ms',(15,31),0,.78,(0,255,255),2)
-        cv2.putText(view,f'RViz corners: {count}/4   C: cancel',(15,66),0,.68,(255,255,255),2)
+        count_frames=(self.frozen_accumulation_meta or {}).get('accumulation_frames',1)
+        cv2.putText(view,f'FROZEN SYNC FRAME  dt={dt_ms:+.1f} ms  LiDAR x{count_frames}',
+                    (15,31),0,.78,(0,255,255),2)
+        status=('RViz Select: drag around chessboard points' if self.frozen_mode=='select' else
+                f'RViz corners: {count}/4')
+        cv2.putText(view,f'{status}   C: cancel',(15,66),0,.68,(255,255,255),2)
         self.frozen_camera_view=view
 
     def release_frozen_pair(self):
@@ -240,8 +332,87 @@ class CaptureGui(Node):
             marker=Marker(); marker.header.frame_id=frame_id; marker.header.stamp=self.get_clock().now().to_msg()
             marker.ns='calibration'; marker.id=0; marker.action=Marker.DELETE
             self.marker_pub.publish(marker)
-        self.frozen_pair=None; self.frozen_camera_view=None; self.clicked_corners=[]
+        self.frozen_pair=None; self.frozen_camera_view=None; self.frozen_mode=None; self.clicked_corners=[]
+        self.frozen_accumulation_meta=None
         self.display_pair=None; self.last_preview_pair_key=None
+
+    def check_motion_consistency(self,selected,source_ids):
+        frame_models=[]
+        for frame_id in np.unique(source_ids):
+            group=selected[source_ids==frame_id]
+            if len(group)<self.motion_min_points: continue
+            plane=fit_plane(group,self.threshold*1.25,rounds=100,
+                            min_inliers=self.motion_min_points)
+            if plane is None: continue
+            inlier_points=group[plane[2],:3]
+            frame_models.append([int(frame_id),plane[0].copy(),float(plane[1]),
+                                 inlier_points.mean(0),len(group),len(inlier_points)])
+        if len(frame_models)<self.accumulation_min_frames:
+            return False,{'motion_consistent':False,'motion_checked_frames':len(frame_models),
+                          'motion_reject_reason':'too_few_per_frame_plane_fits'}
+        reference=max(frame_models,key=lambda model:model[5])
+        ref_n=reference[1]
+        for model in frame_models:
+            if np.dot(model[1],ref_n)<0: model[1]*=-1; model[2]*=-1
+        normals=np.asarray([model[1] for model in frame_models])
+        offsets=np.asarray([model[2] for model in frame_models])
+        centers=np.asarray([model[3] for model in frame_models])
+        mean_n=normals.mean(0); mean_n/=np.linalg.norm(mean_n)
+        normal_angles=np.degrees(np.arccos(np.clip(normals@mean_n,-1,1)))
+        offset_spread=float(np.max(offsets)-np.min(offsets))
+        median_center=np.median(centers,axis=0)
+        center_shift=float(np.max(np.linalg.norm(centers-median_center,axis=1)))
+        max_angle=float(np.max(normal_angles))
+        consistent=(max_angle<=self.motion_max_normal and
+                    offset_spread<=self.motion_max_offset and
+                    center_shift<=self.motion_max_centroid)
+        meta={'motion_consistent':bool(consistent),'motion_checked_frames':len(frame_models),
+              'motion_max_normal_deg':max_angle,'motion_plane_offset_spread_m':offset_spread,
+              'motion_max_centroid_shift_m':center_shift,
+              'motion_points_per_frame':[model[4] for model in frame_models],
+              'motion_inliers_per_frame':[model[5] for model in frame_models]}
+        if not consistent: meta['motion_reject_reason']='board_moved_during_lidar_accumulation'
+        return consistent,meta
+
+    def selected_points_cb(self,msg):
+        if self.frozen_pair is None:
+            self.get_logger().warning('RViz selection ignored: no synchronized frame is frozen')
+            return
+        imsg,cmsg,image,camera_corners,dt_ms=self.frozen_pair
+        try:
+            same_stamp=(msg.header.stamp.sec==cmsg.header.stamp.sec and
+                        msg.header.stamp.nanosec==cmsg.header.stamp.nanosec)
+            if not same_stamp:
+                self.get_logger().warning('RViz selection ignored: selected points are not from the frozen cloud')
+                return
+            selected=cloud_array(msg)
+            if len(selected)<self.manual_min_points:
+                self.get_logger().warning(
+                    f'RViz selection has only {len(selected)} points; need {self.manual_min_points}')
+                return
+            consistent,motion_meta=self.check_motion_consistency(selected,cloud_source_ids(msg))
+            if not consistent:
+                self.get_logger().warning(
+                    'Not saved: accumulated board points moved between frames '
+                    f'(normal={motion_meta.get("motion_max_normal_deg",float("nan")):.2f} deg, '
+                    f'offset={motion_meta.get("motion_plane_offset_spread_m",float("nan"))*100:.1f} cm, '
+                    f'center={motion_meta.get("motion_max_centroid_shift_m",float("nan"))*100:.1f} cm)')
+                return
+            plane=fit_plane(selected,self.threshold,min_inliers=self.manual_min_points)
+            if plane is None or len(plane[2])<self.manual_min_points:
+                self.get_logger().warning('No stable chessboard plane in RViz selected points')
+                return
+            pts=cloud_array(cmsg)
+            self.latest=(image,pts,True,camera_corners,plane,imsg,cmsg)
+            self.selection_meta={'selection_method':'rviz_rectangle_select_accumulated',
+                                 'frozen_synchronized_frame':True,
+                                 'selected_points':int(len(selected)),
+                                 'plane_inliers':int(len(plane[2]))}
+            self.selection_meta.update(self.frozen_accumulation_meta or {})
+            self.selection_meta.update(motion_meta)
+            self.save(auto=False,capture_mode='rviz_select_frozen_sync_accumulated')
+        finally:
+            self.release_frozen_pair()
 
     def cancel_frozen_selection(self):
         if self.frozen_pair is None: return
@@ -328,9 +499,11 @@ class CaptureGui(Node):
         self.marker_pub.publish(m)
 
     def display_tick(self):
-        self.display_camera=(self.frozen_camera_view if self.frozen_camera_view is not None else
-                             self.detected_camera if self.detected_camera is not None and
-                             time.monotonic()-self.detected_at<0.5 else self.raw_camera)
+        # Live view must never wait for chessboard detection. Detection runs in
+        # its own latest-frame worker; only a deliberate RViz selection freezes
+        # and annotates the exact synchronized camera frame.
+        self.display_camera=(self.frozen_camera_view if self.frozen_camera_view is not None
+                             else self.raw_camera)
         cv2.imshow('camera chessboard',self.display_camera)
         key=cv2.waitKey(1)&255
         if key in (ord('c'),ord('C')): self.cancel_frozen_selection()

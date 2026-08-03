@@ -1,0 +1,11 @@
+<library path="camera_lidar_rviz_selection">
+  <class
+    name="camera_lidar_rviz_selection/ChessboardSelect"
+    type="camera_lidar_rviz_selection::ChessboardSelectTool"
+    base_class_type="rviz_common::Tool">
+    <description>
+      Freeze the synchronized calibration frame, drag-select chessboard points,
+      and publish the selected PointCloud2 subset.
+    </description>
+  </class>
+</library>

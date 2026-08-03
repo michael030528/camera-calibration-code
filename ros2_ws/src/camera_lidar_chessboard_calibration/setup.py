@@ -17,5 +17,7 @@ setup(
         'capture_gui = camera_lidar_chessboard_calibration.capture_gui:main',
         'livox_direct = camera_lidar_chessboard_calibration.livox_direct:main',
         'calibrate = camera_lidar_chessboard_calibration.calibrate:main',
+        'project_cloud = camera_lidar_chessboard_calibration.project_cloud:main',
+        'sync_sensors = camera_lidar_chessboard_calibration.sync_sensors:main',
     ]},
 )

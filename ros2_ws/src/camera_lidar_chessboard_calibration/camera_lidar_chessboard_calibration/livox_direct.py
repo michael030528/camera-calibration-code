@@ -5,6 +5,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import PointCloud2, PointField
+from sensor_msgs.msg import Imu
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
 
@@ -41,14 +42,16 @@ def kv(key,value): return struct.pack('<HH',key,len(value))+value
 class LivoxDirect(Node):
     def __init__(self):
         super().__init__('livox_direct')
-        self.declare_parameter('lidar_ip','192.168.1.53'); self.declare_parameter('host_ip','192.168.1.41')
+        self.declare_parameter('lidar_ip','192.168.1.152'); self.declare_parameter('host_ip','192.168.1.41')
         self.declare_parameter('frame_id','livox_frame'); self.declare_parameter('topic','/livox/lidar')
         self.declare_parameter('point_stride',10)
         self.lidar_ip=self.get_parameter('lidar_ip').value; self.host_ip=self.get_parameter('host_ip').value
         self.frame_id=self.get_parameter('frame_id').value
         self.point_stride=max(1,int(self.get_parameter('point_stride').value))
         self.pub=self.create_publisher(PointCloud2,self.get_parameter('topic').value,qos_profile_sensor_data)
+        self.imu_pub=self.create_publisher(Imu,'/livox/imu',qos_profile_sensor_data)
         self.lock=threading.Lock(); self.points=[]; self.stop=False; self.packet_count=0
+        self.clock_lock=threading.Lock()
         self.device_clock_offset_ns=None; self.last_time_type=None
         self.first_publish=True
         self.published_frames=0; self.report_at=time.monotonic()+5
@@ -59,8 +62,11 @@ class LivoxDirect(Node):
         self.imu_ports=(56401,56400) if self.device_type==9 else (58000,58000)
         self.sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
         self.sock.setsockopt(socket.SOL_SOCKET,socket.SO_RCVBUF,4*1024*1024); self.sock.bind((self.host_ip,self.point_port)); self.sock.settimeout(.2)
+        self.imu_sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); self.imu_sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+        self.imu_sock.setsockopt(socket.SOL_SOCKET,socket.SO_RCVBUF,1024*1024); self.imu_sock.bind((self.host_ip,self.imu_ports[0])); self.imu_sock.settimeout(.2)
         self.configure()
-        threading.Thread(target=self.receive,daemon=True).start(); self.create_timer(.1,self.publish)
+        threading.Thread(target=self.receive,daemon=True,name='livox-points').start()
+        threading.Thread(target=self.receive_imu,daemon=True,name='livox-imu').start(); self.create_timer(.1,self.publish)
         self.get_logger().info(f'Livox direct UDP connected: type={self.model} {self.lidar_ip} -> {self.host_ip}:{self.point_port}')
 
     @property
@@ -103,6 +109,16 @@ class LivoxDirect(Node):
         except socket.timeout: raise RuntimeError('Livox stream configuration timeout; close Livox Viewer/other drivers')
         finally: cmdsock.close()
 
+    def ros_stamp_ns(self, device_ns, time_type, arrival_ns):
+        """Map both point and IMU device stamps into the same ROS clock domain."""
+        if time_type==1 and device_ns>1_000_000_000_000_000_000:
+            return device_ns
+        observed=arrival_ns-device_ns
+        with self.clock_lock:
+            if self.device_clock_offset_ns is None or observed<self.device_clock_offset_ns:
+                self.device_clock_offset_ns=observed
+            return device_ns+self.device_clock_offset_ns
+
     def receive(self):
         while not self.stop:
             try: data,addr=self.sock.recvfrom(65535)
@@ -117,13 +133,7 @@ class LivoxDirect(Node):
             # PTP/GPS timestamps are epoch based. Unsynchronized HAP timestamps
             # are device uptime; map them to ROS time using the minimum observed
             # arrival offset, which rejects variable network/queueing delay.
-            if time_type==1 and device_ns>1_000_000_000_000_000_000:
-                packet_start_ns=device_ns
-            else:
-                observed=arrival_ns-device_ns
-                if self.device_clock_offset_ns is None or observed<self.device_clock_offset_ns:
-                    self.device_clock_offset_ns=observed
-                packet_start_ns=device_ns+self.device_clock_offset_ns
+            packet_start_ns=self.ros_stamp_ns(device_ns,time_type,arrival_ns)
             self.last_time_type=time_type
             dtype=data[10]; size={1:14,2:8,3:10}.get(dtype)
             if not size: continue
@@ -140,6 +150,28 @@ class LivoxDirect(Node):
             if frame:
                 with self.lock: self.points.extend(frame)
                 self.packet_count+=1
+
+    def receive_imu(self):
+        reported=False
+        while not self.stop:
+            try: data,addr=self.imu_sock.recvfrom(2048)
+            except socket.timeout: continue
+            except OSError: break
+            if addr[0]!=self.lidar_ip or len(data)<60 or data[10]!=0: continue
+            arrival_ns=self.get_clock().now().nanoseconds
+            device_ns=struct.unpack_from('<Q',data,28)[0]
+            stamp_ns=self.ros_stamp_ns(device_ns,data[11],arrival_ns)
+            gx,gy,gz,ax,ay,az=struct.unpack_from('<ffffff',data,36)
+            msg=Imu(); msg.header.frame_id=self.frame_id
+            msg.header.stamp.sec=stamp_ns//1_000_000_000; msg.header.stamp.nanosec=stamp_ns%1_000_000_000
+            msg.orientation_covariance[0]=-1.0  # MID360 IMU does not output orientation.
+            msg.angular_velocity.x=float(gx); msg.angular_velocity.y=float(gy); msg.angular_velocity.z=float(gz)
+            gravity=9.80665
+            msg.linear_acceleration.x=float(ax)*gravity; msg.linear_acceleration.y=float(ay)*gravity; msg.linear_acceleration.z=float(az)*gravity
+            self.imu_pub.publish(msg)
+            if not reported:
+                self.get_logger().info('Publishing /livox/imu (gyro rad/s, acceleration m/s^2)')
+                reported=True
 
     def publish(self):
         with self.lock: pts,self.points=self.points,[]
@@ -166,6 +198,7 @@ class LivoxDirect(Node):
     def destroy_node(self):
         self.stop=True
         if hasattr(self,'sock'): self.sock.close()
+        if hasattr(self,'imu_sock'): self.imu_sock.close()
         super().destroy_node()
 
 def main():

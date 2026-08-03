@@ -24,6 +24,17 @@ capture_gui:
     # Nearest buffered image/cloud pair must be within 50 ms.
     sync_slop: 0.05
     selection_cloud_topic: "/calibration/selection_cloud"
+    selection_freeze_topic: "/calibration/freeze_selection"
+    selected_points_topic: "/calibration/selected_points"
+    # RViz continuously shows the latest five fixed-LiDAR frames combined.
+    # A selection is accepted only when at least three source frames agree.
+    accumulation_frames: 5
+    accumulation_min_frames: 3
+    accumulation_max_span: 0.55
+    motion_min_points_per_frame: 8
+    motion_max_normal_deg: 4.0
+    motion_max_plane_offset: 0.04
+    motion_max_centroid_shift: 0.15
     output_dir: "calibration_samples"
     # Only these LiDAR points are shown/fitted. Tune from the GUI status/readme.
     roi_x: [0.5, 8.0]

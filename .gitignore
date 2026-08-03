@@ -18,6 +18,8 @@ ros2_ws/*
 ros2_ws/src/*
 !ros2_ws/src/camera_lidar_chessboard_calibration/
 !ros2_ws/src/camera_lidar_chessboard_calibration/**
+!ros2_ws/src/camera_lidar_rviz_selection/
+!ros2_ws/src/camera_lidar_rviz_selection/**
 !ros2_ws/setup_calibration.bash
 !ros2_ws/start_calibration.bash
 !ros2_ws/src/camera_lidar_chessboard_calibration/config/calibration.yaml

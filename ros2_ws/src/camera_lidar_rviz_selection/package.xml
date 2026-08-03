@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>camera_lidar_rviz_selection</name>
+  <version>0.1.0</version>
+  <description>RViz drag-selection tool for frozen camera-LiDAR calibration frames.</description>
+  <maintainer email="user@example.com">user</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>pluginlib</depend>
+  <depend>rclcpp</depend>
+  <depend>rviz_common</depend>
+  <depend>rviz_default_plugins</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+    <rviz plugin="${prefix}/plugin_description.xml"/>
+  </export>
+</package>
