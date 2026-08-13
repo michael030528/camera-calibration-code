@@ -16,6 +16,7 @@ image size: 1920 x 1080
 | `cam103 -> cam104` | `camera_pair_103_104.yml` | 17 | `0.9033 px` | `1.1798 px` | Usable |
 | `cam104 -> cam106` | `camera_pair_104_106.yml` | 32 | `0.6673 px` | `0.8739 px` | Good |
 | `cam102 -> cam105` | `camera_pair_102_105.yml` | 12 | `0.8207 px` | `1.0505 px` | Usable |
+| `cam105 -> cam101` | `camera_pair_105_101.yml` | 18 | `0.6399 px` | `0.9375 px` | Good |
 
 For `cam101 -> cam103`:
 
@@ -33,6 +34,12 @@ For `cam102 -> cam105`:
 
 ```text
 P_cam105 = R_cam102_to_cam105 * P_cam102 + T_cam102_to_cam105
+```
+
+For `cam105 -> cam101`:
+
+```text
+P_cam101 = R_cam105_to_cam101 * P_cam105 + T_cam105_to_cam101
 ```
 
 Translation is stored in meters.
