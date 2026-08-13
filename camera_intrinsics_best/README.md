@@ -17,7 +17,7 @@ image size: 1920 x 1080
 | `192.168.1.103` | `camera_intrinsics_192_168_1_103.yml` | 32 | `0.3608 px` | Good |
 | `192.168.1.104` | `camera_intrinsics_192_168_1_104.yml` | 36 | `0.5564 px` | Good |
 | `192.168.1.105` | `camera_intrinsics_192_168_1_105.yml` | 29 | `0.6137 px` | Good |
-| `192.168.1.106` | `camera_intrinsics_192_168_1_106.yml` | 30 | `0.9044 px` | Usable |
+| `192.168.1.106` | `camera_intrinsics_192_168_1_106.yml` | 30 | `0.4169 px` | Good |
 
 Recommended quality target:
 
