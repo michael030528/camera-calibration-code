@@ -13,6 +13,7 @@ image size: 1920 x 1080
 | Pair | File | Valid Pairs | Stereo RMS | Stereo Reprojection Error | Quality |
 |---|---|---:|---:|---:|---|
 | `cam101 -> cam103` | `camera_pair_101_103.yml` | 29 | `0.7017 px` | `0.9020 px` | Good |
+| `cam103 -> cam104` | `camera_pair_103_104.yml` | 17 | `0.9033 px` | `1.1798 px` | Usable |
 
 For `cam101 -> cam103`:
 
