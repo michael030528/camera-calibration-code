@@ -1,0 +1,20 @@
+%YAML:1.0
+---
+image_width: 1920
+image_height: 1080
+camera_matrix: !!opencv-matrix
+   rows: 3
+   cols: 3
+   dt: d
+   data: [ 1211.2637946472861, 0., 920.91573370528958, 0.,
+       1212.5188591856491, 570.21380064525911, 0., 0., 1. ]
+dist_coeffs: !!opencv-matrix
+   rows: 1
+   cols: 5
+   dt: d
+   data: [ -0.35202317768728993, 0.15279691132952168,
+       -0.00020263681450478023, 0.00048108433862938511,
+       -0.038032409780746237 ]
+calibrate_camera_rms: 0.41694957410395046
+reprojection_error_px: 0.41694987705015155
+valid_image_count: 30
